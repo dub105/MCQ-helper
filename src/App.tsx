@@ -9,6 +9,32 @@ function uid() {
   return Date.now().toString(36) + Math.random().toString(36).slice(2, 7);
 }
 
+// `correct`/selected-answer fields are a single index for single-select
+// questions, or an array of indices for multi-select ("select all that apply").
+function toIndexArray(indices) {
+  return Array.isArray(indices) ? indices : [indices];
+}
+
+function formatAnswerLabel(indices) {
+  return toIndexArray(indices)
+    .map((i) => LETTERS[i])
+    .join("・");
+}
+
+function formatAnswerText(indices, choices) {
+  return toIndexArray(indices)
+    .map((i) => `${LETTERS[i]}) ${choices[i]}`)
+    .join(" / ");
+}
+
+function isSameAnswerSet(a, b) {
+  const arrA = toIndexArray(a);
+  const arrB = toIndexArray(b);
+  if (arrA.length !== arrB.length) return false;
+  const setB = new Set(arrB);
+  return arrA.every((x) => setB.has(x));
+}
+
 // Minimal wrapper matching the {value} shape used below, backed by localStorage.
 const storage = {
   async get(key) {
@@ -138,10 +164,10 @@ function parseBulkText(text) {
     lines.forEach((line) => {
       const qMatch = line.match(/^(?:Q|問題|問)\s*[:：]\s*(.+)$/i);
       const choiceMatch = line.match(/^([A-Za-z0-9])\s*[).、.]\s*(.+)$/);
-      const answerMatch = line.match(/^(?:Answer|答え|正解)\s*[:：]\s*([A-Za-z0-9]+)/i);
+      const answerMatch = line.match(/^(?:Answer|答え|正解)\s*[:：]\s*(.+)$/i);
 
       if (answerMatch) {
-        answerRaw = answerMatch[1];
+        answerRaw = answerMatch[1].trim();
       } else if (qMatch) {
         questionText = qMatch[1].trim();
       } else if (choiceMatch) {
@@ -156,17 +182,22 @@ function parseBulkText(text) {
       return;
     }
 
-    let correctIndex = -1;
-    const answerUpper = answerRaw.toUpperCase();
-    const byLabel = choices.findIndex((c) => c.label === answerUpper);
-    if (byLabel !== -1) {
-      correctIndex = byLabel;
-    } else if (/^\d+$/.test(answerRaw)) {
-      const n = parseInt(answerRaw, 10);
-      if (n >= 1 && n <= choices.length) correctIndex = n - 1;
-    }
+    // Multiple correct answers can be separated by commas/slashes/spaces, e.g. "A, C".
+    const tokens = answerRaw.split(/[,、,\/／\s]+/).filter(Boolean);
+    const correctIndexes = [];
+    tokens.forEach((tok) => {
+      const tokUpper = tok.toUpperCase();
+      const byLabel = choices.findIndex((c) => c.label === tokUpper);
+      if (byLabel !== -1) {
+        correctIndexes.push(byLabel);
+      } else if (/^\d+$/.test(tok)) {
+        const n = parseInt(tok, 10);
+        if (n >= 1 && n <= choices.length) correctIndexes.push(n - 1);
+      }
+    });
+    const uniqueIndexes = Array.from(new Set(correctIndexes)).sort((a, b) => a - b);
 
-    if (correctIndex === -1) {
+    if (uniqueIndexes.length === 0) {
       errors.push(`ブロック${blockIdx + 1}: 正解「${answerRaw}」が選択肢と一致しません`);
       return;
     }
@@ -175,7 +206,7 @@ function parseBulkText(text) {
       id: uid(),
       question: questionText,
       choices: choices.map((c) => c.text),
-      correct: correctIndex,
+      correct: uniqueIndexes.length > 1 ? uniqueIndexes : uniqueIndexes[0],
     });
   });
 
@@ -399,6 +430,8 @@ function ManageView({
   const [qText, setQText] = useState("");
   const [choices, setChoices] = useState(["", ""]);
   const [correct, setCorrect] = useState(0);
+  const [multiple, setMultiple] = useState(false);
+  const [correctMulti, setCorrectMulti] = useState([]);
   const [moveFolderId, setMoveFolderId] = useState(folder.id);
   const [imageId, setImageId] = useState(null);
   // The image the persisted question had when editing began, so cancelling
@@ -413,9 +446,28 @@ function ManageView({
     setQText("");
     setChoices(["", ""]);
     setCorrect(0);
+    setMultiple(false);
+    setCorrectMulti([]);
     setMoveFolderId(folder.id);
     setImageId(null);
     setOriginalImageId(null);
+  }
+
+  function handleModeChange(isMulti) {
+    setMultiple(isMulti);
+    if (isMulti) {
+      setCorrectMulti([correct]);
+    } else {
+      setCorrect(correctMulti.length > 0 ? correctMulti[0] : 0);
+    }
+  }
+
+  function handlePickCorrect(i) {
+    if (multiple) {
+      setCorrectMulti((prev) => (prev.includes(i) ? prev.filter((x) => x !== i) : [...prev, i].sort((a, b) => a - b)));
+    } else {
+      setCorrect(i);
+    }
   }
 
   function cancelEdit() {
@@ -430,7 +482,10 @@ function ManageView({
     setEditingId(q.id);
     setQText(q.question);
     setChoices([...q.choices]);
-    setCorrect(q.correct);
+    const isMulti = Array.isArray(q.correct);
+    setMultiple(isMulti);
+    setCorrect(isMulti ? q.correct[0] ?? 0 : q.correct);
+    setCorrectMulti(isMulti ? q.correct : [q.correct]);
     setMoveFolderId(q.folderId);
     setImageId(q.imageId || null);
     setOriginalImageId(q.imageId || null);
@@ -469,12 +524,17 @@ function ManageView({
     setChoices(next);
     if (correct === i) setCorrect(0);
     else if (correct > i) setCorrect(correct - 1);
+    setCorrectMulti((prev) => prev.filter((c) => c !== i).map((c) => (c > i ? c - 1 : c)));
   }
 
   function submitForm() {
     const trimmedChoices = choices.map((c) => c.trim());
     if (!qText.trim() || trimmedChoices.some((c) => !c)) {
       alert("問題文とすべての選択肢を入力してください");
+      return;
+    }
+    if (multiple && correctMulti.length === 0) {
+      alert("正解の選択肢を少なくとも1つ選んでください");
       return;
     }
     if (editingId && originalImageId && originalImageId !== imageId) {
@@ -484,7 +544,7 @@ function ManageView({
       id: editingId || uid(),
       question: qText.trim(),
       choices: trimmedChoices,
-      correct,
+      correct: multiple ? [...correctMulti].sort((a, b) => a - b) : correct,
       folderId: editingId ? moveFolderId : folder.id,
       imageId,
     });
@@ -546,12 +606,24 @@ function ManageView({
             <input className="fileInput" type="file" accept="image/*" onChange={handleImageSelect} />
           )}
 
-          <label className="fieldLabel">選択肢（正解をタップして選択）</label>
+          <label className="fieldLabel">回答形式</label>
+          <div className="toggleRow">
+            <button className={"toggleOpt" + (!multiple ? " toggleActive" : "")} onClick={() => handleModeChange(false)}>
+              単一選択
+            </button>
+            <button className={"toggleOpt" + (multiple ? " toggleActive" : "")} onClick={() => handleModeChange(true)}>
+              複数選択
+            </button>
+          </div>
+
+          <label className="fieldLabel">
+            {multiple ? "選択肢（正解を全てタップして選択）" : "選択肢（正解をタップして選択）"}
+          </label>
           {choices.map((c, i) => (
             <div className="choiceRow" key={i}>
               <button
-                className={"letterPick" + (correct === i ? " correctPick" : "")}
-                onClick={() => setCorrect(i)}
+                className={"letterPick" + ((multiple ? correctMulti.includes(i) : correct === i) ? " correctPick" : "")}
+                onClick={() => handlePickCorrect(i)}
                 aria-label={`${LETTERS[i]}を正解にする`}
               >
                 {LETTERS[i]}
@@ -609,6 +681,7 @@ function ManageView({
         <div className="card">
           <p className="hint">
             以下の形式でまとめて貼り付けると、複数問を一度に登録できます。問題ごとに空行で区切ってください。
+            正解を「Answer: A, C」のようにカンマ区切りで複数指定すると、複数選択の問題として登録されます。
           </p>
           <pre className="formatExample">{`Q: 問題文をここに
 A) 選択肢1
@@ -617,10 +690,11 @@ C) 選択肢3
 D) 選択肢4
 Answer: B
 
-Q: 次の問題文
+Q: 次の問題文（複数選択の例）
 A) ...
 B) ...
-Answer: A`}</pre>
+C) ...
+Answer: A, C`}</pre>
           <button className="ghostBtn" onClick={insertSample} style={{ marginBottom: 12 }}>
             サンプルを試す
           </button>
@@ -658,7 +732,7 @@ Answer: A`}</pre>
                     {i + 1}. {r.question}
                   </div>
                   <div className="bulkItemA">
-                    正解: {LETTERS[r.correct]}) {r.choices[r.correct]}
+                    正解: {formatAnswerText(r.correct, r.choices)}
                   </div>
                 </div>
               ))}
@@ -691,7 +765,8 @@ Answer: A`}</pre>
               <div className="qItemMain">
                 <div className="qItemText">{q.question}</div>
                 <div className="qItemMeta">
-                  正解: {LETTERS[q.correct]}) {q.choices[q.correct]}
+                  正解: {formatAnswerText(q.correct, q.choices)}
+                  {Array.isArray(q.correct) && "（複数選択）"}
                 </div>
               </div>
               <div className="qItemActions">
@@ -749,15 +824,24 @@ function PracticeSetup({ scopeName, count, onBack, onStart }) {
 // ---- Practice ---------------------------------------------------------------
 function Practice({ deck, folderNameOf, onBack, onFinish }) {
   const [index, setIndex] = useState(0);
-  const [selected, setSelected] = useState(null);
+  const [selected, setSelected] = useState(Array.isArray(deck[0].correct) ? [] : null);
+  const [confirmed, setConfirmed] = useState(false);
   const [answers, setAnswers] = useState([]);
 
   const current = deck[index];
   const isLast = index === deck.length - 1;
+  const isMultiple = Array.isArray(current.correct);
+  const answered = isMultiple ? confirmed : selected !== null;
+  const isCorrectNow = answered && isSameAnswerSet(selected, current.correct);
 
   function handleSelect(choiceIdx) {
-    if (selected !== null) return;
-    setSelected(choiceIdx);
+    if (isMultiple) {
+      if (confirmed) return;
+      setSelected((prev) => (prev.includes(choiceIdx) ? prev.filter((x) => x !== choiceIdx) : [...prev, choiceIdx]));
+    } else {
+      if (selected !== null) return;
+      setSelected(choiceIdx);
+    }
   }
 
   function handleNext() {
@@ -767,7 +851,7 @@ function Practice({ deck, folderNameOf, onBack, onFinish }) {
       choices: current.choices,
       correctIndex: current.correct,
       selectedIndex: selected,
-      isCorrect: selected === current.correct,
+      isCorrect: isCorrectNow,
       imageId: current.imageId,
     };
     const nextAnswers = [...answers, record];
@@ -775,7 +859,9 @@ function Practice({ deck, folderNameOf, onBack, onFinish }) {
       onFinish(nextAnswers);
     } else {
       setAnswers(nextAnswers);
-      setSelected(null);
+      const nextQuestion = deck[index + 1];
+      setSelected(Array.isArray(nextQuestion.correct) ? [] : null);
+      setConfirmed(false);
       setIndex(index + 1);
     }
   }
@@ -786,17 +872,29 @@ function Practice({ deck, folderNameOf, onBack, onFinish }) {
       <div className="progressTrack">
         <div
           className="progressFill"
-          style={{ width: `${((index + (selected !== null ? 1 : 0)) / deck.length) * 100}%` }}
+          style={{ width: `${((index + (answered ? 1 : 0)) / deck.length) * 100}%` }}
         />
       </div>
       <div className="card">
         {folderNameOf && <div className="qCategoryTag">{folderNameOf(current)}</div>}
         {current.imageId && <StoredImage imageId={current.imageId} className="questionImage" alt="問題画像" />}
         <div className="questionText">{current.question}</div>
+        {isMultiple && <div className="hint">正解を全て選んで「決定する」を押してください</div>}
         <div className="choicesList">
           {current.choices.map((c, i) => {
             let cls = "choiceBtn";
-            if (selected !== null) {
+            if (isMultiple) {
+              const isChosen = selected.includes(i);
+              const isRight = current.correct.includes(i);
+              if (confirmed) {
+                if (isRight && isChosen) cls += " choiceCorrect";
+                else if (!isRight && isChosen) cls += " choiceWrong";
+                else if (isRight && !isChosen) cls += " choiceMissed";
+                else cls += " choiceMuted";
+              } else if (isChosen) {
+                cls += " choiceSelected";
+              }
+            } else if (selected !== null) {
               if (i === current.correct) cls += " choiceCorrect";
               else if (i === selected) cls += " choiceWrong";
               else cls += " choiceMuted";
@@ -809,14 +907,20 @@ function Practice({ deck, folderNameOf, onBack, onFinish }) {
             );
           })}
         </div>
-        {selected !== null && (
-          <div className={"feedback" + (selected === current.correct ? " feedbackGood" : " feedbackBad")}>
-            {selected === current.correct ? "正解です" : `不正解 — 正解は ${LETTERS[current.correct]}`}
+        {answered && (
+          <div className={"feedback" + (isCorrectNow ? " feedbackGood" : " feedbackBad")}>
+            {isCorrectNow ? "正解です" : `不正解 — 正解は ${formatAnswerLabel(current.correct)}`}
           </div>
         )}
-        <button className="primaryBtn wide" disabled={selected === null} onClick={handleNext}>
-          {isLast ? "結果を見る" : "次の問題へ"}
-        </button>
+        {isMultiple && !confirmed ? (
+          <button className="primaryBtn wide" onClick={() => setConfirmed(true)}>
+            決定する
+          </button>
+        ) : (
+          <button className="primaryBtn wide" disabled={!answered} onClick={handleNext}>
+            {isLast ? "結果を見る" : "次の問題へ"}
+          </button>
+        )}
       </div>
     </div>
   );
@@ -873,10 +977,13 @@ function Results({ answers, questions, onRetrySame, onReviewWrong, onFlagWrong, 
                   <div className="qItemMain">
                     <div className="qItemText">{a.question}</div>
                     <div className="qItemMeta wrongMeta">
-                      あなたの回答: {LETTERS[a.selectedIndex]}) {a.choices[a.selectedIndex]}
+                      あなたの回答:{" "}
+                      {toIndexArray(a.selectedIndex).length > 0
+                        ? formatAnswerText(a.selectedIndex, a.choices)
+                        : "未回答"}
                     </div>
                     <div className="qItemMeta correctMeta">
-                      正解: {LETTERS[a.correctIndex]}) {a.choices[a.correctIndex]}
+                      正解: {formatAnswerText(a.correctIndex, a.choices)}
                     </div>
                   </div>
                   <div className="qItemActions">
@@ -1518,6 +1625,8 @@ html, body { background: var(--bg); }
 .choiceBtn.choiceCorrect { border-color: var(--good); background: rgba(59, 130, 246, 0.15); }
 .choiceBtn.choiceWrong { border-color: var(--bad); background: rgba(239, 68, 68, 0.15); }
 .choiceBtn.choiceMuted { opacity: 0.5; }
+.choiceBtn.choiceSelected { border-color: var(--accent); background: rgba(59, 130, 246, 0.1); }
+.choiceBtn.choiceMissed { border-color: var(--good); border-style: dashed; background: rgba(59, 130, 246, 0.05); }
 .feedback { margin-top: 14px; font-size: 14px; font-weight: 600; }
 .feedback.feedbackGood { color: var(--good); }
 .feedback.feedbackBad { color: var(--bad); }
