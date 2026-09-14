@@ -20,6 +20,78 @@ const storage = {
   },
 };
 
+// ---- Image storage (IndexedDB) ---------------------------------------
+// Photos/diagrams are stored as Blobs on-device so questions work fully offline.
+const IMAGE_DB_NAME = "mcq_images_v1";
+const IMAGE_STORE = "images";
+
+function openImageDB() {
+  return new Promise((resolve, reject) => {
+    const req = indexedDB.open(IMAGE_DB_NAME, 1);
+    req.onupgradeneeded = () => {
+      req.result.createObjectStore(IMAGE_STORE);
+    };
+    req.onsuccess = () => resolve(req.result);
+    req.onerror = () => reject(req.error);
+  });
+}
+
+async function saveImage(id, blob) {
+  const db = await openImageDB();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(IMAGE_STORE, "readwrite");
+    tx.objectStore(IMAGE_STORE).put(blob, id);
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error);
+  });
+}
+
+async function loadImage(id) {
+  const db = await openImageDB();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(IMAGE_STORE, "readonly");
+    const req = tx.objectStore(IMAGE_STORE).get(id);
+    req.onsuccess = () => resolve(req.result || null);
+    req.onerror = () => reject(req.error);
+  });
+}
+
+async function deleteImage(id) {
+  const db = await openImageDB();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(IMAGE_STORE, "readwrite");
+    tx.objectStore(IMAGE_STORE).delete(id);
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error);
+  });
+}
+
+// Resolves an imageId to a displayable object URL, revoking it on cleanup.
+function StoredImage({ imageId, className, alt }) {
+  const [url, setUrl] = useState(null);
+
+  useEffect(() => {
+    if (!imageId) {
+      setUrl(null);
+      return;
+    }
+    let cancelled = false;
+    let objectUrl = null;
+    loadImage(imageId).then((blob) => {
+      if (cancelled || !blob) return;
+      objectUrl = URL.createObjectURL(blob);
+      setUrl(objectUrl);
+    });
+    return () => {
+      cancelled = true;
+      if (objectUrl) URL.revokeObjectURL(objectUrl);
+    };
+  }, [imageId]);
+
+  if (!url) return null;
+  return <img className={className} src={url} alt={alt || ""} />;
+}
+
 const SAMPLE_TEXT = `Q: 心筋梗塞の心電図所見で最も特徴的なのはどれか
 A) ST上昇
 B) PR延長
@@ -328,6 +400,10 @@ function ManageView({
   const [choices, setChoices] = useState(["", ""]);
   const [correct, setCorrect] = useState(0);
   const [moveFolderId, setMoveFolderId] = useState(folder.id);
+  const [imageId, setImageId] = useState(null);
+  // The image the persisted question had when editing began, so cancelling
+  // an edit never deletes an image that's still in use elsewhere.
+  const [originalImageId, setOriginalImageId] = useState(null);
 
   const [bulkText, setBulkText] = useState("");
   const [bulkResult, setBulkResult] = useState(null);
@@ -338,6 +414,15 @@ function ManageView({
     setChoices(["", ""]);
     setCorrect(0);
     setMoveFolderId(folder.id);
+    setImageId(null);
+    setOriginalImageId(null);
+  }
+
+  function cancelEdit() {
+    if (imageId && imageId !== originalImageId) {
+      deleteImage(imageId);
+    }
+    resetForm();
   }
 
   function startEdit(q) {
@@ -347,6 +432,24 @@ function ManageView({
     setChoices([...q.choices]);
     setCorrect(q.correct);
     setMoveFolderId(q.folderId);
+    setImageId(q.imageId || null);
+    setOriginalImageId(q.imageId || null);
+  }
+
+  async function handleImageSelect(e) {
+    const file = e.target.files && e.target.files[0];
+    e.target.value = "";
+    if (!file) return;
+    const id = uid();
+    await saveImage(id, file);
+    setImageId(id);
+  }
+
+  async function handleRemoveImage() {
+    if (imageId && imageId !== originalImageId) {
+      await deleteImage(imageId);
+    }
+    setImageId(null);
   }
 
   function handleChoiceChange(i, val) {
@@ -374,12 +477,16 @@ function ManageView({
       alert("問題文とすべての選択肢を入力してください");
       return;
     }
+    if (editingId && originalImageId && originalImageId !== imageId) {
+      deleteImage(originalImageId);
+    }
     onAddOrUpdate({
       id: editingId || uid(),
       question: qText.trim(),
       choices: trimmedChoices,
       correct,
       folderId: editingId ? moveFolderId : folder.id,
+      imageId,
     });
     resetForm();
   }
@@ -426,6 +533,18 @@ function ManageView({
             onChange={(e) => setQText(e.target.value)}
             placeholder="例）心筋梗塞の心電図所見で最も特徴的なのはどれか"
           />
+
+          <label className="fieldLabel">画像（任意）</label>
+          {imageId ? (
+            <div className="imagePreviewWrap">
+              <StoredImage imageId={imageId} className="imagePreview" alt="登録した画像" />
+              <button className="ghostBtn" onClick={handleRemoveImage}>
+                画像を削除
+              </button>
+            </div>
+          ) : (
+            <input className="fileInput" type="file" accept="image/*" onChange={handleImageSelect} />
+          )}
 
           <label className="fieldLabel">選択肢（正解をタップして選択）</label>
           {choices.map((c, i) => (
@@ -478,7 +597,7 @@ function ManageView({
               {editingId ? "更新する" : "登録する"}
             </button>
             {editingId && (
-              <button className="ghostBtn" onClick={resetForm}>
+              <button className="ghostBtn" onClick={cancelEdit}>
                 キャンセル
               </button>
             )}
@@ -568,6 +687,7 @@ Answer: A`}</pre>
         <div className="qList">
           {questions.map((q) => (
             <div className="qItem" key={q.id}>
+              {q.imageId && <StoredImage imageId={q.imageId} className="qItemThumb" alt="問題画像" />}
               <div className="qItemMain">
                 <div className="qItemText">{q.question}</div>
                 <div className="qItemMeta">
@@ -648,6 +768,7 @@ function Practice({ deck, folderNameOf, onBack, onFinish }) {
       correctIndex: current.correct,
       selectedIndex: selected,
       isCorrect: selected === current.correct,
+      imageId: current.imageId,
     };
     const nextAnswers = [...answers, record];
     if (isLast) {
@@ -670,6 +791,7 @@ function Practice({ deck, folderNameOf, onBack, onFinish }) {
       </div>
       <div className="card">
         {folderNameOf && <div className="qCategoryTag">{folderNameOf(current)}</div>}
+        {current.imageId && <StoredImage imageId={current.imageId} className="questionImage" alt="問題画像" />}
         <div className="questionText">{current.question}</div>
         <div className="choicesList">
           {current.choices.map((c, i) => {
@@ -747,6 +869,7 @@ function Results({ answers, questions, onRetrySame, onReviewWrong, onFlagWrong, 
               const flagged = original ? original.flagged : false;
               return (
                 <div className="qItem reviewItem" key={i}>
+                  {a.imageId && <StoredImage imageId={a.imageId} className="qItemThumb" alt="問題画像" />}
                   <div className="qItemMain">
                     <div className="qItemText">{a.question}</div>
                     <div className="qItemMeta wrongMeta">
@@ -851,14 +974,15 @@ export default function App() {
   }
 
   function deleteFolder(id) {
-    const count = questions.filter((q) => q.folderId === id).length;
+    const inFolder = questions.filter((q) => q.folderId === id);
     const folder = folders.find((f) => f.id === id);
     if (
       !confirm(
-        `「${folder ? folder.name : "このフォルダ"}」を削除します。中の問題${count}問も削除されます。よろしいですか？`
+        `「${folder ? folder.name : "このフォルダ"}」を削除します。中の問題${inFolder.length}問も削除されます。よろしいですか？`
       )
     )
       return;
+    inFolder.forEach((q) => q.imageId && deleteImage(q.imageId));
     setFolders((prev) => prev.filter((f) => f.id !== id));
     setQuestions((prev) => prev.filter((q) => q.folderId !== id));
     setView("home");
@@ -874,6 +998,8 @@ export default function App() {
 
   function deleteQuestion(id) {
     if (!confirm("この問題を削除しますか？")) return;
+    const target = questions.find((q) => q.id === id);
+    if (target && target.imageId) deleteImage(target.imageId);
     setQuestions((prev) => prev.filter((p) => p.id !== id));
   }
 
@@ -883,6 +1009,7 @@ export default function App() {
 
   function clearFolderQuestions(folderId) {
     if (!confirm("このフォルダの問題をすべて削除します。よろしいですか？")) return;
+    questions.filter((q) => q.folderId === folderId).forEach((q) => q.imageId && deleteImage(q.imageId));
     setQuestions((prev) => prev.filter((q) => q.folderId !== folderId));
   }
 
@@ -948,6 +1075,7 @@ export default function App() {
         choices: a.choices,
         correct: a.correctIndex,
         folderId: original ? original.folderId : null,
+        imageId: original ? original.imageId : a.imageId,
       };
     });
     beginPracticeSetup(pool, "間違えた問題", { type: "wrong" });
@@ -1254,6 +1382,19 @@ html, body { background: var(--bg); }
   cursor: pointer;
 }
 .editNotice { color: var(--accent); font-size: 13px; margin-bottom: 6px; }
+.fileInput { width: 100%; font-size: 13px; color: var(--text-dim); margin-bottom: 4px; }
+.imagePreviewWrap { margin-bottom: 4px; }
+.imagePreview {
+  display: block;
+  width: 100%;
+  height: auto;
+  max-height: 220px;
+  border-radius: 10px;
+  border: 1px solid var(--border);
+  margin-bottom: 8px;
+  object-fit: contain;
+  background: var(--surface-2);
+}
 .hint { color: var(--text-dim); font-size: 13px; margin: 0 0 10px; line-height: 1.6; }
 .formatExample {
   background: var(--surface-2);
@@ -1286,6 +1427,14 @@ html, body { background: var(--bg); }
   display: flex;
   justify-content: space-between;
   gap: 10px;
+}
+.qItemThumb {
+  flex-shrink: 0;
+  width: 48px;
+  height: 48px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  object-fit: cover;
 }
 .qItemMain { flex: 1; min-width: 0; }
 .qItemText { font-size: 13px; margin-bottom: 4px; line-height: 1.5; }
@@ -1326,6 +1475,17 @@ html, body { background: var(--bg); }
   border-radius: 999px;
   padding: 2px 10px;
   margin-bottom: 10px;
+}
+.questionImage {
+  display: block;
+  width: 100%;
+  height: auto;
+  max-height: 320px;
+  border-radius: 10px;
+  border: 1px solid var(--border);
+  margin-bottom: 14px;
+  object-fit: contain;
+  background: var(--surface-2);
 }
 .questionText { font-size: 17px; font-weight: 600; line-height: 1.8; margin-bottom: 18px; }
 .choicesList { display: flex; flex-direction: column; gap: 8px; }
@@ -1372,6 +1532,7 @@ html, body { background: var(--bg); }
   .menuList { display: grid; grid-template-columns: repeat(2, 1fr); gap: 12px; }
   .qList { display: grid; grid-template-columns: repeat(2, 1fr); gap: 10px; }
   .questionText { font-size: 19px; }
+  .questionImage { max-height: 420px; }
   .choiceBtn { padding: 14px 16px; font-size: 15px; }
   .card { max-width: 640px; margin-left: auto; margin-right: auto; }
 }
