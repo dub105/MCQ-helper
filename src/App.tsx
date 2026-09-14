@@ -9,6 +9,17 @@ function uid() {
   return Date.now().toString(36) + Math.random().toString(36).slice(2, 7);
 }
 
+// Minimal wrapper matching the {value} shape used below, backed by localStorage.
+const storage = {
+  async get(key) {
+    const value = localStorage.getItem(key);
+    return value === null ? null : { value };
+  },
+  async set(key, value) {
+    localStorage.setItem(key, value);
+  },
+};
+
 const SAMPLE_TEXT = `Q: 心筋梗塞の心電図所見で最も特徴的なのはどれか
 A) ST上昇
 B) PR延長
@@ -781,7 +792,7 @@ export default function App() {
   useEffect(() => {
     (async () => {
       try {
-        const res = await window.storage.get(DATA_KEY);
+        const res = await storage.get(DATA_KEY);
         if (res && res.value) {
           const data = JSON.parse(res.value);
           setFolders(data.folders || []);
@@ -794,7 +805,7 @@ export default function App() {
       }
       // Migrate from the older single-key question list, if present
       try {
-        const old = await window.storage.get(OLD_QUESTIONS_KEY);
+        const old = await storage.get(OLD_QUESTIONS_KEY);
         if (old && old.value) {
           const oldQuestions = JSON.parse(old.value);
           const catNames = Array.from(
@@ -824,7 +835,7 @@ export default function App() {
     if (!loaded) return;
     (async () => {
       try {
-        await window.storage.set(DATA_KEY, JSON.stringify({ folders, questions }));
+        await storage.set(DATA_KEY, JSON.stringify({ folders, questions }));
       } catch (e) {
         console.error("保存に失敗しました", e);
       }
