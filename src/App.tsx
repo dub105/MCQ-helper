@@ -1071,6 +1071,7 @@ const CSS = `
   --bad: #ef4444;
 }
 * { box-sizing: border-box; }
+html, body { background: var(--bg); }
 .app {
   font-family: "Hiragino Kaku Gothic ProN", "Hiragino Sans", "Yu Gothic", "Noto Sans JP", Meiryo, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
   background: var(--bg);
@@ -1361,4 +1362,24 @@ const CSS = `
 .feedback.feedbackGood { color: var(--good); }
 .feedback.feedbackBad { color: var(--bad); }
 .reviewItem { align-items: flex-start; }
+
+/* Tablet: wider canvas + multi-column lists instead of a stretched phone column */
+@media (min-width: 700px) {
+  .app { max-width: 760px; font-size: 17px; }
+  .screen { padding: 0 24px 24px; }
+  .topbar h1 { font-size: 21px; }
+  .heroNumber { font-size: 52px; }
+  .menuList { display: grid; grid-template-columns: repeat(2, 1fr); gap: 12px; }
+  .qList { display: grid; grid-template-columns: repeat(2, 1fr); gap: 10px; }
+  .questionText { font-size: 19px; }
+  .choiceBtn { padding: 14px 16px; font-size: 15px; }
+  .card { max-width: 640px; margin-left: auto; margin-right: auto; }
+}
+
+/* Larger tablet / landscape: a bit more breathing room and a third column */
+@media (min-width: 1024px) {
+  .app { max-width: 1040px; }
+  .menuList { grid-template-columns: repeat(3, 1fr); }
+  .qList { grid-template-columns: repeat(3, 1fr); }
+}
 `;
