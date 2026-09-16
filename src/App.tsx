@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 
 const DATA_KEY = "mcq_data_v2";
 const OLD_QUESTIONS_KEY = "mcq_questions_v1";
@@ -89,6 +89,25 @@ async function deleteImage(id) {
     tx.objectStore(IMAGE_STORE).delete(id);
     tx.oncomplete = () => resolve();
     tx.onerror = () => reject(tx.error);
+  });
+}
+
+async function clearAllImages() {
+  const db = await openImageDB();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(IMAGE_STORE, "readwrite");
+    tx.objectStore(IMAGE_STORE).clear();
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error);
+  });
+}
+
+function blobToDataUrl(blob) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(reader.result);
+    reader.onerror = () => reject(reader.error);
+    reader.readAsDataURL(blob);
   });
 }
 
@@ -238,9 +257,12 @@ function Home({
   onCreateFolder,
   onPracticeAll,
   onPracticeFlagged,
+  onExport,
+  onImport,
 }) {
   const [adding, setAdding] = useState(false);
   const [name, setName] = useState("");
+  const importInputRef = useRef(null);
   const totalCount = questions.length;
   const flaggedCount = questions.filter((q) => q.flagged).length;
 
@@ -250,6 +272,12 @@ function Home({
     onCreateFolder(trimmed);
     setName("");
     setAdding(false);
+  }
+
+  function handleImportChange(e) {
+    const file = e.target.files && e.target.files[0];
+    e.target.value = "";
+    if (file) onImport(file);
   }
 
   return (
@@ -328,6 +356,32 @@ function Home({
           ＋ 新しいフォルダを作成
         </button>
       )}
+
+      <div className="listHeader">
+        <h2>バックアップ</h2>
+      </div>
+      <div className="card">
+        <p className="hint">
+          端末を機種変更したり、別の端末（スマホ・タブレット）でも同じ問題を使いたいときは、
+          ここでエクスポートしたファイルを、もう一方の端末でインポートしてください。画像も含めて書き出されます。
+          インポートすると、その端末の現在のデータは置き換えられます。
+        </p>
+        <div className="formActions">
+          <button className="primaryBtn" onClick={onExport} disabled={totalCount === 0 && folders.length === 0}>
+            エクスポート
+          </button>
+          <button className="ghostBtn" onClick={() => importInputRef.current && importInputRef.current.click()}>
+            インポート
+          </button>
+          <input
+            ref={importInputRef}
+            type="file"
+            accept="application/json"
+            style={{ display: "none" }}
+            onChange={handleImportChange}
+          />
+        </div>
+      </div>
     </div>
   );
 }
@@ -1202,6 +1256,58 @@ export default function App() {
     return f ? f.name : "";
   }
 
+  async function exportBackup() {
+    const imageIds = Array.from(new Set(questions.filter((q) => q.imageId).map((q) => q.imageId)));
+    const images = {};
+    for (const id of imageIds) {
+      const blob = await loadImage(id);
+      if (blob) images[id] = await blobToDataUrl(blob);
+    }
+    const payload = {
+      version: 1,
+      exportedAt: new Date().toISOString(),
+      folders,
+      questions,
+      images,
+    };
+    const blob = new Blob([JSON.stringify(payload)], { type: "application/json" });
+    const url = URL.createObjectURL(blob);
+    const stamp = new Date().toISOString().slice(0, 16).replace(/[-:T]/g, "");
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `mcq-backup-${stamp}.json`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+  }
+
+  async function importBackup(file) {
+    let payload;
+    try {
+      payload = JSON.parse(await file.text());
+    } catch (e) {
+      alert("ファイルの読み込みに失敗しました。正しいバックアップファイルを選択してください。");
+      return;
+    }
+    if (!payload || !Array.isArray(payload.folders) || !Array.isArray(payload.questions)) {
+      alert("バックアップファイルの形式が正しくありません。");
+      return;
+    }
+    if (!confirm("この端末の現在のデータをすべて置き換えます。よろしいですか？")) return;
+
+    await clearAllImages();
+    const images = payload.images || {};
+    for (const [id, dataUrl] of Object.entries(images)) {
+      const blob = await fetch(dataUrl).then((res) => res.blob());
+      await saveImage(id, blob);
+    }
+    setFolders(payload.folders);
+    setQuestions(payload.questions);
+    setActiveFolderId(null);
+    setView("home");
+  }
+
   const activeFolder = folders.find((f) => f.id === activeFolderId) || null;
   const activeFolderQuestions = activeFolder
     ? questions.filter((q) => q.folderId === activeFolder.id)
@@ -1222,6 +1328,8 @@ export default function App() {
           onCreateFolder={createFolder}
           onPracticeAll={openAllPractice}
           onPracticeFlagged={openFlaggedPractice}
+          onExport={exportBackup}
+          onImport={importBackup}
         />
       )}
 
