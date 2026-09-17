@@ -885,15 +885,15 @@ function Practice({ deck, folderNameOf, onBack, onFinish }) {
   const current = deck[index];
   const isLast = index === deck.length - 1;
   const isMultiple = Array.isArray(current.correct);
-  const answered = isMultiple ? confirmed : selected !== null;
+  const hasSelection = isMultiple ? selected.length > 0 : selected !== null;
+  const answered = confirmed;
   const isCorrectNow = answered && isSameAnswerSet(selected, current.correct);
 
   function handleSelect(choiceIdx) {
+    if (confirmed) return;
     if (isMultiple) {
-      if (confirmed) return;
       setSelected((prev) => (prev.includes(choiceIdx) ? prev.filter((x) => x !== choiceIdx) : [...prev, choiceIdx]));
     } else {
-      if (selected !== null) return;
       setSelected(choiceIdx);
     }
   }
@@ -933,25 +933,21 @@ function Practice({ deck, folderNameOf, onBack, onFinish }) {
         {folderNameOf && <div className="qCategoryTag">{folderNameOf(current)}</div>}
         {current.imageId && <StoredImage imageId={current.imageId} className="questionImage" alt="問題画像" />}
         <div className="questionText">{current.question}</div>
-        {isMultiple && <div className="hint">正解を全て選んで「決定する」を押してください</div>}
+        <div className="hint">
+          {isMultiple ? "正解を全て選んで「決定する」を押してください" : "選択肢を選んで「決定する」を押してください"}
+        </div>
         <div className="choicesList">
           {current.choices.map((c, i) => {
             let cls = "choiceBtn";
-            if (isMultiple) {
-              const isChosen = selected.includes(i);
-              const isRight = current.correct.includes(i);
-              if (confirmed) {
-                if (isRight && isChosen) cls += " choiceCorrect";
-                else if (!isRight && isChosen) cls += " choiceWrong";
-                else if (isRight && !isChosen) cls += " choiceMissed";
-                else cls += " choiceMuted";
-              } else if (isChosen) {
-                cls += " choiceSelected";
-              }
-            } else if (selected !== null) {
-              if (i === current.correct) cls += " choiceCorrect";
-              else if (i === selected) cls += " choiceWrong";
+            const isChosen = isMultiple ? selected.includes(i) : selected === i;
+            const isRight = isMultiple ? current.correct.includes(i) : current.correct === i;
+            if (confirmed) {
+              if (isRight && isChosen) cls += " choiceCorrect";
+              else if (!isRight && isChosen) cls += " choiceWrong";
+              else if (isRight && !isChosen) cls += " choiceMissed";
               else cls += " choiceMuted";
+            } else if (isChosen) {
+              cls += " choiceSelected";
             }
             return (
               <button key={i} className={cls} onClick={() => handleSelect(i)}>
@@ -966,12 +962,12 @@ function Practice({ deck, folderNameOf, onBack, onFinish }) {
             {isCorrectNow ? "正解です" : `不正解 — 正解は ${formatAnswerLabel(current.correct)}`}
           </div>
         )}
-        {isMultiple && !confirmed ? (
-          <button className="primaryBtn wide" onClick={() => setConfirmed(true)}>
+        {!confirmed ? (
+          <button className="primaryBtn wide" disabled={!hasSelection} onClick={() => setConfirmed(true)}>
             決定する
           </button>
         ) : (
-          <button className="primaryBtn wide" disabled={!answered} onClick={handleNext}>
+          <button className="primaryBtn wide" onClick={handleNext}>
             {isLast ? "結果を見る" : "次の問題へ"}
           </button>
         )}
